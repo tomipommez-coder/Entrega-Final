@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Boliche Simpson</title>
+  <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.7.0/dist/aframe-extras.min.js"></script>
+
+  <style>
+    #zona-joystick {
+      position: fixed;
+      bottom: 28px;
+      left: 28px;
+      width: 110px;
+      height: 110px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 2px solid rgba(0, 229, 255, 0.5);
+      border-radius: 50%;
+      z-index: 9999;
+      touch-action: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #palanca-joystick {
+      width: 44px;
+      height: 44px;
+      background: rgba(0, 229, 255, 0.75);
+      border-radius: 50%;
+      box-shadow: 0 0 12px rgba(0, 229, 255, 0.8);
+      transform: translate(0px, 0px);
+      pointer-events: none;
+    }
+  </style>
+
+  <script>
+    // 1. Textura compartida para haces de luz
+    var texturaHaz = null;
+    function getTexturaHaz() {
+      if (!texturaHaz) {
+        var c = document.createElement('canvas');
+        c.width = 16; c.height = 64;
+        var ctx = c.getContext('2d');
+        var g = ctx.createLinearGradient(0, 0, 0, 64);
+        g.addColorStop(0, 'rgba(255,255,255,1)');
+        g.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, 16, 64);
+        texturaHaz = new THREE.CanvasTexture(c);
+      }
+      return texturaHaz;
+    }
+
+    AFRAME.registerComponent('haz-luz-opt', {
+      schema: { color: { type: 'color', default: '#ffffff' }, opacidad: { type: 'number', default: 0.04 } },
+      init: function () {
+        var self = this;
+        this.el.addEventListener('loaded', function () {
+          var mesh = self.el.getObject3D('mesh');
+          if (mesh) {
+            self.mat = new THREE.MeshBasicMaterial({
+              color: new THREE.Color(self.data.color),
+              alphaMap: getTexturaHaz(),
+              transparent: true,
+              opacity: self.data.opacidad,
+              blending: THREE.AdditiveBlending,
+              side: THREE.DoubleSide,
+              depthWrite: false
+            });
+            mesh.material = self.mat;
+          }
+        });
+      },
+      update: function () {
+        if (this.mat) this.mat.color.set(this.data.color);
+      }
+    });
+
+    AFRAME.registerComponent('apuntar-centro', {
+      init: function () { this.el.object3D.lookAt(new THREE.Vector3(0, 0, -2.2)); }
+    });
+
+    // 2. Cargador original para carpetas en assets/ (Moe, Disco Stu, Otto, Police)
+    AFRAME.registerComponent('cargar-modelo-carpeta', {
+      schema: {
+        carpeta: { type: 'string' }
+      },
+      init: function () {
+        var el = this.el;
+        var base = 'assets/' + encodeURIComponent(this.data.carpeta) + '/';
+
+        fetch(base + 'scene.gltf')
+          .then(function (res) {
+            if (res.ok) {
+              el.setAttribute('gltf-model', base + 'scene.gltf');
+            } else {
+              return fetch(base + 'scene(1).gltf')
+                .then(function (r2) { return r2.json(); })
+                .then(function (json) {
+                  if (json.buffers && json.buffers[0]) {
+                    json.buffers[0].uri = new URL(base + 'scene(1).bin', window.location.href).href;
+                  }
+                  if (json.images) {
+                    json.images.forEach(function (img) {
+                      if (img.uri && !img.uri.startsWith('data:')) {
+                        img.uri = new URL(base + img.uri, window.location.href).href;
+                      }
+                    });
+                  }
+                  var blob = new Blob([JSON.stringify(json)], { type: 'model/gltf+json' });
+                  el.setAttribute('gltf-model', URL.createObjectURL(blob));
+                });
+            }
+          })
+          .catch(function (err) {
+            console.warn('Error cargando carpeta ' + base, err);
+          });
+      }
+    });
+
+    // 3. Normalizador de escala, altura en piso, sombras y animación
+    AFRAME.registerComponent('ajustar-modelo', {
+      schema: {
+        altura: { type: 'number', default: 1.75 },
+        posX: { type: 'number', default: 0 },
+        posY: { type: 'number', default: 0 },
+        posZ: { type: 'number', default: 0 },
+        rotY: { type: 'number', default: 0 },
+        animar: { type: 'boolean', default: false }
+      },
+      init: function () {
+        var el = this.el;
+        var d = this.data;
+
+        el.addEventListener('model-loaded', function (e) {
+          var obj = e.detail.model;
+          if (!obj) return;
+
+          if (d.animar) {
+            if (e.detail.animations && e.detail.animations.length > 0) {
+              el.setAttribute('animation-mixer', 'clip: *; loop: repeat');
+            } else {
+              el.setAttribute('animation__baile', 'property: rotation; from: 0 ' + (d.rotY - 22) + ' 0; to: 0 ' + (d.rotY + 22) + ' 0; dir: alternate; loop: true; dur: 850; easing: easeInOutSine');
+            }
+          }
+
+          obj.traverse(function (n) {
+            if (n.isMesh) {
+              n.frustumCulled = false;
+              n.castShadow = true;
+              n.receiveShadow = true;
+              if (n.material) {
+                n.material.side = THREE.DoubleSide;
+              }
+            }
+          });
+
+          var parent = el.object3D.parent;
+          parent.remove(el.object3D);
+
+          el.object3D.position.set(0, 0, 0);
+          el.object3D.rotation.set(0, THREE.MathUtils.degToRad(d.rotY), 0);
+          el.object3D.scale.set(1, 1, 1);
+          el.object3D.updateMatrixWorld(true);
+
+          var box = new THREE.Box3().setFromObject(obj);
+          var size = new THREE.Vector3();
+          box.getSize(size);
+
+          if (size.y > 0) {
+            var s = d.altura / size.y;
+            el.object3D.scale.set(s, s, s);
+            el.object3D.updateMatrixWorld(true);
+
+            var box2 = new THREE.Box3().setFromObject(obj);
+            var center = new THREE.Vector3();
+            box2.getCenter(center);
+
+            el.object3D.position.set(
+              d.posX - center.x,
+              d.posY - box2.min.y,
+              d.posZ - center.z
+            );
+          }
+
+          parent.add(el.object3D);
+        });
+      }
+    });
+
+    // 4. Pista 9x9 con material estándar que recibe sombras reales
+    AFRAME.registerComponent('pista-9x9', {
+      init: function () {
+        var c = document.createElement('canvas');
+        c.width = 512; c.height = 512;
+        var ctx = c.getContext('2d');
+        var paleta = ['#ff0055', '#ffee00', '#00ffaa', '#00ccff', '#ff5500', '#d000ff', '#ff00aa', '#00ff66', '#ffcc00'];
+        var s = 512 / 9;
+        for (var r = 0; r < 9; r++) {
+          for (var col = 0; col < 9; col++) {
+            ctx.fillStyle = paleta[(r * 3 + col) % paleta.length];
+            ctx.fillRect(col * s, r * s, s, s);
+            ctx.strokeStyle = '#111111';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(col * s, r * s, s, s);
+          }
+        }
+        var tex = new THREE.CanvasTexture(c);
+        tex.magFilter = THREE.NearestFilter;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        var el = this.el;
+        el.addEventListener('loaded', function () {
+          var mesh = el.getObject3D('mesh');
+          if (mesh) {
+            mesh.material = new THREE.MeshStandardMaterial({
+              map: tex,
+              roughness: 0.45,
+              metalness: 0.1
+            });
+            mesh.receiveShadow = true;
+          }
+        });
+      }
+    });
+
+    // 5. Rockola DJ para 4 pistas
+    var djState = { pista: 1, total: 4, pausado: false };
+
+    function reproducirPista(idx) {
+      djState.pista = idx;
+      djState.pausado = false;
+
+      for (var i = 1; i <= djState.total; i++) {
+        var v = document.querySelector('#video-' + i);
+        var a = document.querySelector('#audio-' + i);
+        if (v) v.pause();
+        if (a) a.pause();
+      }
+
+      var idVid = '#video-' + idx;
+      document.querySelector('#pantalla-atras').setAttribute('src', idVid);
+      document.querySelector('#pantalla-frente').setAttribute('src', idVid);
+
+      var vAct = document.querySelector('#video-' + idx);
+      var aAct = document.querySelector('#audio-' + idx);
+      if (vAct) { vAct.currentTime = 0; vAct.play().catch(function(){}); }
+      if (aAct) { aAct.currentTime = 0; aAct.volume = 1.0; aAct.play().catch(function(){}); }
+
+      var visor = document.querySelector('#visor-track');
+      if (visor) visor.setAttribute('value', 'Track ' + idx + ' / ' + djState.total);
+    }
+
+    AFRAME.registerComponent('control-dj-accion', {
+      schema: { accion: { type: 'string', default: 'siguiente' } },
+      init: function () {
+        var accion = this.data.accion;
+        var el = this.el;
+        el.addEventListener('click', function () {
+          el.setAttribute('scale', '0.85 0.5 0.85');
+          setTimeout(function () { el.setAttribute('scale', '1 1 1'); }, 140);
+
+          if (accion === 'siguiente') {
+            reproducirPista(djState.pista >= djState.total ? 1 : djState.pista + 1);
+          } else if (accion === 'anterior') {
+            reproducirPista(djState.pista <= 1 ? djState.total : djState.pista - 1);
+          } else if (accion === 'pausa') {
+            var v = document.querySelector('#video-' + djState.pista);
+            var a = document.querySelector('#audio-' + djState.pista);
+            if (djState.pausado) {
+              if (v) v.play().catch(function(){});
+              if (a) a.play().catch(function(){});
+              djState.pausado = false;
+            } else {
+              if (v) v.pause();
+              if (a) a.pause();
+              djState.pausado = true;
+            }
+          }
+        });
+      }
+    });
+
+    // 6. Teletransporte
+    var enCabinaDJ = false;
+
+    AFRAME.registerComponent('teletransporte', {
+      schema: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, modo: { type: 'string' } },
+      init: function () {
+        var d = this.data;
+        this.el.addEventListener('click', function () {
+          var rig = document.querySelector('#punto-de-vista');
+          var cam = document.querySelector('#camara-interna');
+          var btn = document.querySelector('#grupo-btn-spawn');
+          enCabinaDJ = (d.modo === 'dj');
+          if (rig) { rig.object3D.position.set(d.x, d.y, d.z); rig.object3D.rotation.set(0, 0, 0); }
+          if (cam) cam.setAttribute('rotation', '0 0 0');
+          if (btn) btn.setAttribute('visible', d.modo === 'pista');
+        });
+      }
+    });
+
+    // 7. Colisiones sólidas
+    var obstaculos = [
+      { minX: 4.9, maxX: 8.0, minZ: -5.4, maxZ: 0.4 },       // Barra de Moe
+      { minX: -3.5, maxX: 3.5, minZ: -9.0, maxZ: -5.8 },     // Cabina DJ y escenario
+      { minX: -8.0, maxX: -5.7, minZ: -7.4, maxZ: 2.4 },     // Sillones
+      { minX: -0.55, maxX: 0.55, minZ: -2.75, maxZ: -1.65 }, // Disco Stu en pista
+      { minX: -6.95, maxX: -5.85, minZ: -1.25, maxZ: -0.25 },// Police al costado del sillón
+      { minX: -4.6, maxX: -3.0, minZ: -7.6, maxZ: -6.0 },
+      { minX: 3.0,  maxX: 4.6,  minZ: -7.6, maxZ: -6.0 },
+      { minX: -4.6, maxX: -3.0, minZ: 3.0,  maxZ: 4.6 },
+      { minX: 3.0,  maxX: 4.6,  minZ: 3.0,  maxZ: 4.6 }
+    ];
+
+    function posicionValida(x, z) {
+      if (x < -7.2 || x > 7.2 || z < -8.4 || z > 4.2) return false;
+      if (enCabinaDJ && x > -2.5 && x < 2.5 && z > -8.5 && z < -7.4) return true;
+
+      for (var i = 0; i < obstaculos.length; i++) {
+        var o = obstaculos[i];
+        if (x > o.minX && x < o.maxX && z > o.minZ && z < o.maxZ) return false;
+      }
+      return true;
+    }
+
+    // 8. Movimiento con Joystick táctil + WASD
+    var joyInput = { x: 0, y: 0 };
+    var teclas = {};
+    window.addEventListener('keydown', function (e) { teclas[e.code] = true; });
+    window.addEventListener('keyup', function (e) { teclas[e.code] = false; });
+
+    AFRAME.registerComponent('movimiento-solido', {
+      schema: { velocidad: { type: 'number', default: 4.2 } },
+      init: function () { this.cam = document.querySelector('#camara-interna'); },
+      tick: function (time, delta) {
+        var inputX = joyInput.x;
+        var inputY = joyInput.y;
+
+        if (teclas['KeyW'] || teclas['ArrowUp'])    inputY -= 1;
+        if (teclas['KeyS'] || teclas['ArrowDown'])  inputY += 1;
+        if (teclas['KeyA'] || teclas['ArrowLeft'])  inputX -= 1;
+        if (teclas['KeyD'] || teclas['ArrowRight']) inputX += 1;
+
+        if (Math.abs(inputX) < 0.05 && Math.abs(inputY) < 0.05) return;
+
+        var dt = Math.min(delta / 1000, 0.1);
+        var rotY = this.cam.object3D.rotation.y;
+
+        var adelanteX = -Math.sin(rotY);
+        var adelanteZ = -Math.cos(rotY);
+        var derechaX  =  Math.cos(rotY);
+        var derechaZ  = -Math.sin(rotY);
+
+        var moveX = (adelanteX * -inputY + derechaX * inputX) * this.data.velocidad * dt;
+        var moveZ = (adelanteZ * -inputY + derechaZ * inputX) * this.data.velocidad * dt;
+
+        var pos = this.el.object3D.position;
+        if (posicionValida(pos.x + moveX, pos.z)) pos.x += moveX;
+        if (posicionValida(pos.x, pos.z + moveZ)) pos.z += moveZ;
+      }
+    });
+
+    // 9. Generador procedural de mobiliario con sombras
+    AFRAME.registerComponent('generar-mobiliario', {
+      init: function () {
+        var escena = this.el;
+
+        [-6, -2.5, 1].forEach(function (z, idx) {
+          var sillon = document.createElement('a-entity');
+          sillon.setAttribute('position', '-6.6 0 ' + z);
+          sillon.setAttribute('rotation', '0 90 0');
+          sillon.innerHTML =
+            '<a-box shadow="cast: true; receive: true" position="0 0.3 0" width="2.2" height="0.4" depth="0.8" color="#4a1570"></a-box>' +
+            '<a-box shadow="cast: true; receive: true" position="0 0.75 -0.35" width="2.2" height="0.7" depth="0.14" color="#661f9a"></a-box>' +
+            '<a-box shadow="cast: true; receive: true" position="-1.1 0.55 0" width="0.15" height="0.4" depth="0.8" color="#350e50"></a-box>' +
+            '<a-box shadow="cast: true; receive: true" position="1.1 0.55 0" width="0.15" height="0.4" depth="0.8" color="#350e50"></a-box>';
+          escena.appendChild(sillon);
+
+          var vent = document.createElement('a-entity');
+          vent.setAttribute('position', '-7.95 2.5 ' + z);
+          vent.setAttribute('rotation', '0 90 0');
+          vent.innerHTML =
+            '<a-box width="2.3" height="1.4" depth="0.08" color="#111111"></a-box>' +
+            '<a-plane position="0 0 0.05" width="2.1" height="1.2" material="color: #3b2857; opacity: 0.35"></a-plane>';
+          escena.appendChild(vent);
+
+          if (idx < 2) {
+            var neon = document.createElement('a-cylinder');
+            neon.setAttribute('position', '-7.9 2.5 ' + (z + 1.75));
+            neon.setAttribute('radius', '0.08');
+            neon.setAttribute('height', '3');
+            neon.setAttribute('material', 'shader: flat; color: ' + (idx === 0 ? '#00e5ff' : '#ff00aa'));
+            escena.appendChild(neon);
+          }
+        });
+
+        [
+          { pos: '-3.8 1.1 -6.8', rot: '0 30 0' },
+          { pos: '3.8 1.1 -6.8',  rot: '0 -30 0' },
+          { pos: '-3.8 1.1 3.8',  rot: '0 150 0' },
+          { pos: '3.8 1.1 3.8',   rot: '0 -150 0' }
+        ].forEach(function (p) {
+          var box = document.createElement('a-entity');
+          box.setAttribute('position', p.pos);
+          box.setAttribute('rotation', p.rot);
+          box.innerHTML =
+            '<a-box shadow="cast: true; receive: true" width="1" height="1.8" depth="0.8" color="#141414"></a-box>' +
+            '<a-cylinder position="0 0.4 0.41" rotation="90 0 0" radius="0.28" height="0.04" color="#3a3a3a"></a-cylinder>' +
+            '<a-cylinder position="0 -0.35 0.41" rotation="90 0 0" radius="0.32" height="0.04" color="#3a3a3a"></a-cylinder>';
+          escena.appendChild(box);
+        });
+
+        var barra = document.querySelector('#barra-de-moe');
+        [-1.8, -0.6, 0.6, 1.8].forEach(function (x) {
+          var banq = document.createElement('a-entity');
+          banq.innerHTML =
+            '<a-cylinder shadow="cast: true" position="' + x + ' 0.4 0.7" radius="0.04" height="0.8" color="#1e5cb3"></a-cylinder>' +
+            '<a-cylinder shadow="cast: true" position="' + x + ' 0.82 0.7" radius="0.24" height="0.1" color="#cc1b1b"></a-cylinder>';
+          barra.appendChild(banq);
+        });
+      }
+    });
+  </script>
+</head>
+<body>
+
+  <!-- JOYSTICK TÁCTIL -->
+  <div id="zona-joystick">
+    <div id="palanca-joystick"></div>
+  </div>
+
+  <a-scene generar-mobiliario
+           shadow="type: pcfsoft"
+           cursor="rayOrigin: mouse; fuse: false"
+           raycaster="objects: .clickable"
+           fog="type: linear; color: #1b1030; near: 14; far: 35"
+           renderer="antialias: true; powerPreference: high-performance">
+
+    <!-- RECURSOS -->
+    <a-assets>
+      <video id="video-1" src="assets/video.mp4" autoplay loop="true" muted="true" playsinline crossorigin="anonymous"></video>
+      <video id="video-2" src="assets/video2.mp4" loop="true" muted="true" playsinline crossorigin="anonymous"></video>
+      <video id="video-3" src="assets/video3.mp4" loop="true" muted="true" playsinline crossorigin="anonymous"></video>
+      <video id="video-4" src="assets/video4.mp4" loop="true" muted="true" playsinline crossorigin="anonymous"></video>
+
+      <audio id="audio-1" src="assets/musica.mp3" preload="auto" loop="true"></audio>
+      <audio id="audio-2" src="assets/musica2.mp3" preload="auto" loop="true"></audio>
+      <audio id="audio-3" src="assets/musica3.mp3" preload="auto" loop="true"></audio>
+      <audio id="audio-4" src="assets/musica4.mp3" preload="auto" loop="true"></audio>
+    </a-assets>
+
+    <a-sky color="#1b1030"></a-sky>
+
+    <!-- HABITACIÓN CERRADA Y CON RECEPCIÓN DE SOMBRAS -->
+    <a-entity id="grupo-habitacion">
+      <!-- Piso principal -->
+      <a-plane shadow="receive: true" position="0 0 -2" rotation="-90 0 0" width="18" height="18" material="color: #242033; roughness: 0.9"></a-plane>
+      <!-- Techo -->
+      <a-plane position="0 9 -2" rotation="90 0 0" width="18" height="18" material="color: #0d0a14; roughness: 0.9; side: double"></a-plane>
+
+      <!-- Pared Trasera completa (cierra el fondo detrás del escenario y pantalla) -->
+      <a-plane shadow="receive: true" position="0 4.5 -9.05" width="18" height="9" material="color: #161124; roughness: 0.85; side: double"></a-plane>
+      <a-box position="0 4.5 -8.98" width="14" height="7" depth="0.08" color="#110c1c"></a-box>
+      <a-cylinder position="-5.2 4.5 -8.92" radius="0.06" height="6.8" material="shader: flat; color: #ff00aa"></a-cylinder>
+      <a-cylinder position="5.2 4.5 -8.92"  radius="0.06" height="6.8" material="shader: flat; color: #00e5ff"></a-cylinder>
+
+      <!-- Pared y Pantalla Frontal -->
+      <a-plane shadow="receive: true" position="0 4.5 5" rotation="0 180 0" width="18" height="9" material="color: #1a1528; roughness: 0.8"></a-plane>
+      <a-box position="0 4.5 4.85" width="9.6" height="4.8" depth="0.2" color="#111111"></a-box>
+      <a-video id="pantalla-frente" src="#video-1" position="0 4.5 4.73" rotation="0 180 0" width="8.7" height="4.5"></a-video>
+
+      <!-- Parlantes aéreos frontales -->
+      <a-entity position="-5.3 4.5 4.6" rotation="0 155 0">
+        <a-box width="0.9" height="1.6" depth="0.5" color="#111111"></a-box>
+        <a-cylinder position="0 0.35 0.26" rotation="90 0 0" radius="0.24" height="0.03" color="#3a3a3a"></a-cylinder>
+        <a-cylinder position="0 -0.35 0.26" rotation="90 0 0" radius="0.28" height="0.03" color="#3a3a3a"></a-cylinder>
+      </a-entity>
+      <a-entity position="5.3 4.5 4.6" rotation="0 -155 0">
+        <a-box width="0.9" height="1.6" depth="0.5" color="#111111"></a-box>
+        <a-cylinder position="0 0.35 0.26" rotation="90 0 0" radius="0.24" height="0.03" color="#3a3a3a"></a-cylinder>
+        <a-cylinder position="0 -0.35 0.26" rotation="90 0 0" radius="0.28" height="0.03" color="#3a3a3a"></a-cylinder>
+      </a-entity>
+
+      <!-- Paredes Laterales y Columnas -->
+      <a-plane shadow="receive: true" position="-8 4.5 -2" rotation="0 90 0" width="18" height="9" material="color: #161224; roughness: 0.8; side: double"></a-plane>
+      <a-plane shadow="receive: true" position="8 4.5 -2" rotation="0 -90 0" width="18" height="9" material="color: #161224; roughness: 0.8; side: double"></a-plane>
+      <a-cylinder position="-7.6 4.5 -8.5" radius="0.22" height="9" material="shader: flat; color: #0088ff"></a-cylinder>
+      <a-cylinder position="7.6 4.5 -8.5"  radius="0.22" height="9" material="shader: flat; color: #0088ff"></a-cylinder>
+      <a-cylinder position="-7.6 4.5 4.5"  radius="0.22" height="9" material="shader: flat; color: #0088ff"></a-cylinder>
+      <a-cylinder position="7.6 4.5 4.5"   radius="0.22" height="9" material="shader: flat; color: #0088ff"></a-cylinder>
+    </a-entity>
+
+    <!-- 4 REFLECTORES MULTICOLOR -->
+    <a-entity position="-7.2 8.2 -7.8" apuntar-centro>
+      <a-cylinder radius="0.25" height="0.5" rotation="90 0 0" color="#111111"></a-cylinder>
+      <a-cone position="0 0 5" rotation="-90 0 0" radius-top="0.25" radius-bottom="2.8" height="10" open-ended="true" haz-luz-opt="color: #00ffff; opacidad: 0.04" animation__color="property: haz-luz-opt.color; to: #ff00aa; dir: alternate; loop: true; dur: 2800"></a-cone>
+      <a-entity light="type: spot; color: #00ffff; intensity: 2.2; angle: 40; penumbra: 0.6" position="0 0 0.5" animation__color="property: light.color; to: #ff00aa; dir: alternate; loop: true; dur: 2800"></a-entity>
+    </a-entity>
+    <a-entity position="7.2 8.2 -7.8" apuntar-centro>
+      <a-cylinder radius="0.25" height="0.5" rotation="90 0 0" color="#111111"></a-cylinder>
+      <a-cone position="0 0 5" rotation="-90 0 0" radius-top="0.25" radius-bottom="2.8" height="10" open-ended="true" haz-luz-opt="color: #ff00aa; opacidad: 0.04" animation__color="property: haz-luz-opt.color; to: #ffee00; dir: alternate; loop: true; dur: 3200"></a-cone>
+      <a-entity light="type: spot; color: #ff00aa; intensity: 2.2; angle: 40; penumbra: 0.6" position="0 0 0.5" animation__color="property: light.color; to: #ffee00; dir: alternate; loop: true; dur: 3200"></a-entity>
+    </a-entity>
+    <a-entity position="-7.2 8.2 3.5" apuntar-centro>
+      <a-cylinder radius="0.25" height="0.5" rotation="90 0 0" color="#111111"></a-cylinder>
+      <a-cone position="0 0 5" rotation="-90 0 0" radius-top="0.25" radius-bottom="2.8" height="10" open-ended="true" haz-luz-opt="color: #ffee00; opacidad: 0.035" animation__color="property: haz-luz-opt.color; to: #00ff66; dir: alternate; loop: true; dur: 2500"></a-cone>
+      <a-entity light="type: spot; color: #ffee00; intensity: 2.0; angle: 40; penumbra: 0.6" position="0 0 0.5" animation__color="property: light.color; to: #00ff66; dir: alternate; loop: true; dur: 2500"></a-entity>
+    </a-entity>
+    <a-entity position="7.2 8.2 3.5" apuntar-centro>
+      <a-cylinder radius="0.25" height="0.5" rotation="90 0 0" color="#111111"></a-cylinder>
+      <a-cone position="0 0 5" rotation="-90 0 0" radius-top="0.25" radius-bottom="2.8" height="10" open-ended="true" haz-luz-opt="color: #00ff66; opacidad: 0.035" animation__color="property: haz-luz-opt.color; to: #00e5ff; dir: alternate; loop: true; dur: 3500"></a-cone>
+      <a-entity light="type: spot; color: #00ff66; intensity: 2.0; angle: 40; penumbra: 0.6" position="0 0 0.5" animation__color="property: light.color; to: #00e5ff; dir: alternate; loop: true; dur: 3500"></a-entity>
+    </a-entity>
+
+    <!-- BARRA DE MOE -->
+    <a-entity id="barra-de-moe" position="6.2 0 -2.5" rotation="0 -90 0">
+      <a-box shadow="cast: true; receive: true" position="0 0.55 0" width="5.2" height="1.1" depth="0.65" color="#5a3318"></a-box>
+      <a-box shadow="cast: true; receive: true" position="0 1.13 0.05" width="5.4" height="0.07" depth="0.85" color="#8b5226"></a-box>
+      <a-cylinder position="0 0.15 0.42" rotation="0 0 90" radius="0.04" height="5.2" color="#cfa844"></a-cylinder>
+
+      <a-box shadow="cast: true; receive: true" position="0 1.6 -1.6" width="5.4" height="3.2" depth="0.25" color="#422512"></a-box>
+      <a-plane position="0 1.9 -1.45" width="4.6" height="1.8" material="color: #0b5930; roughness: 0.8"></a-plane>
+      <a-box position="0 1.1 -1.35" width="4.8" height="0.1" depth="0.5" color="#5a3318"></a-box>
+
+      <a-cylinder position="-1.5 1.35 -1.35" radius="0.07" height="0.4" color="#2b5928"></a-cylinder>
+      <a-cylinder position="-1.1 1.35 -1.35" radius="0.06" height="0.38" color="#802828"></a-cylinder>
+      <a-cylinder position="-0.7 1.35 -1.35" radius="0.07" height="0.42" color="#c99538"></a-cylinder>
+      <a-cylinder position="0.7 1.35 -1.35"  radius="0.06" height="0.38" color="#802828"></a-cylinder>
+      <a-cylinder position="1.1 1.35 -1.35"  radius="0.07" height="0.4" color="#2b5928"></a-cylinder>
+      <a-cylinder position="1.5 1.35 -1.35"  radius="0.07" height="0.42" color="#c99538"></a-cylinder>
+
+      <a-entity light="type: point; color: #fff4d6; intensity: 1.5; distance: 5" position="0 2.3 -0.4"></a-entity>
+
+      <!-- MODELO 3D DE MOE (assets/Moe) -->
+      <a-entity id="modelo-moe-3d"
+                cargar-modelo-carpeta="carpeta: Moe"
+                ajustar-modelo="altura: 1.80; posX: 0; posY: 0; posZ: -0.75; rotY: 0; animar: false"></a-entity>
+    </a-entity>
+
+    <!-- POLICE AL COSTADO DEL SILLÓN CENTRAL (assets/Police) -->
+    <a-entity id="modelo-police-3d"
+              cargar-modelo-carpeta="carpeta: Police"
+              ajustar-modelo="altura: 1.80; posX: -6.4; posY: 0; posZ: -0.75; rotY: 90; animar: false"></a-entity>
+
+    <!-- BOLA DISCO -->
+    <a-entity position="0 5 -2.2" animation="property: rotation; to: 0 360 0; loop: true; dur: 8000; easing: linear">
+      <a-cylinder position="0 0.7 0" radius="0.012" height="1.4" color="#222222"></a-cylinder>
+      <a-sphere radius="0.55" segments-width="12" segments-height="8" material="color: #ffffff; roughness: 0.2; metalness: 0.3"></a-sphere>
+      <a-entity light="type: point; color: #ffffff; intensity: 1.4; distance: 8" position="0 -0.2 0"></a-entity>
+    </a-entity>
+
+    <!-- PISTA DE BAILE 9x9 + DISCO STU EN EL CENTRO -->
+    <a-entity position="0 0.05 -2.2">
+      <a-box shadow="receive: true" position="0 0 0" width="6.8" height="0.08" depth="6.8" color="#111111"></a-box>
+      <a-plane shadow="receive: true" position="0 0.05 0" rotation="-90 0 0" width="6.48" height="6.48" pista-9x9></a-plane>
+
+      <a-entity light="type: point; color: #ffffff; intensity: 1.1; distance: 5" position="0 2.2 0.8"></a-entity>
+
+      <!-- DISCO STU EN LA PISTA (assets/Disco Stu) -->
+      <a-entity id="personaje-pista-3d"
+                cargar-modelo-carpeta="carpeta: Disco Stu"
+                ajustar-modelo="altura: 1.75; posX: 0; posY: 0.05; posZ: 0; rotY: 0; animar: true"></a-entity>
+    </a-entity>
+
+    <!-- ESCENARIO TRASERO Y PANTALLA PEGADA A LA PARED -->
+    <a-entity position="0 0 -7.6">
+      <a-cylinder shadow="cast: true; receive: true" position="0 0.15 0" radius="3.2" height="0.3" color="#352e47"></a-cylinder>
+      <a-cylinder shadow="cast: true; receive: true" position="0 0.45 0" radius="2.4" height="0.3" color="#483f5e"></a-cylinder>
+
+      <a-box position="0 3.8 -1.28" width="9.6" height="4.8" depth="0.16" color="#111111"></a-box>
+      <a-video id="pantalla-atras" src="#video-1" position="0 3.8 -1.18" width="8.7" height="4.5"></a-video>
+
+      <a-entity position="-5.3 3.8 -1.1" rotation="0 25 0">
+        <a-box shadow="cast: true" width="0.9" height="1.6" depth="0.5" color="#111111"></a-box>
+        <a-cylinder position="0 0.35 0.26" rotation="90 0 0" radius="0.24" height="0.03" color="#3a3a3a"></a-cylinder>
+        <a-cylinder position="0 -0.35 0.26" rotation="90 0 0" radius="0.28" height="0.03" color="#3a3a3a"></a-cylinder>
+      </a-entity>
+      <a-entity position="5.3 3.8 -1.1" rotation="0 -25 0">
+        <a-box shadow="cast: true" width="0.9" height="1.6" depth="0.5" color="#111111"></a-box>
+        <a-cylinder position="0 0.35 0.26" rotation="90 0 0" radius="0.24" height="0.03" color="#3a3a3a"></a-cylinder>
+        <a-cylinder position="0 -0.35 0.26" rotation="90 0 0" radius="0.28" height="0.03" color="#3a3a3a"></a-cylinder>
+      </a-entity>
+    </a-entity>
+
+    <!-- OTTO EN LA CABINA DEL DJ (assets/Otto) -->
+    <a-entity id="modelo-otto-3d"
+              cargar-modelo-carpeta="carpeta: Otto"
+              ajustar-modelo="altura: 1.75; posX: 0; posY: 0.6; posZ: -7.55; rotY: 0; animar: true"></a-entity>
+
+    <!-- CABINA DEL DJ -->
+    <a-entity position="0 0.6 -6.8">
+      <a-box shadow="cast: true; receive: true" position="0 0.35 0" width="2.4" height="0.7" depth="0.8" color="#181818"></a-box>
+      <a-cylinder position="-0.8 0.71 0" radius="0.22" height="0.02" material="shader: flat; color: #00ffff"></a-cylinder>
+      <a-cylinder position="0.8 0.71 0"  radius="0.22" height="0.02" material="shader: flat; color: #00ffff"></a-cylinder>
+
+      <a-text id="visor-track" value="Track 1 / 4" position="0 0.90 0.15" rotation="-45 180 0" align="center" width="2.2" color="#ffffff"></a-text>
+
+      <a-cylinder class="clickable" position="0.4 0.73 -0.05" radius="0.09" height="0.05" material="shader: flat; color: #9900ff" control-dj-accion="accion: anterior"></a-cylinder>
+      <a-text value="Anterior" position="0.4 0.85 -0.05" rotation="-55 180 0" align="center" width="1.6" color="#d896ff"></a-text>
+
+      <a-cylinder class="clickable" position="0 0.73 -0.05" radius="0.08" height="0.05" material="shader: flat; color: #ffaa00" control-dj-accion="accion: pausa"></a-cylinder>
+      <a-text value="Pausa / Play" position="0 0.85 -0.05" rotation="-55 180 0" align="center" width="1.6" color="#ffdd88"></a-text>
+
+      <a-cylinder class="clickable" position="-0.4 0.73 -0.05" radius="0.09" height="0.05" material="shader: flat; color: #00ff66" control-dj-accion="accion: siguiente"></a-cylinder>
+      <a-text value="Siguiente" position="-0.4 0.85 -0.05" rotation="-55 180 0" align="center" width="1.6" color="#88ffaa"></a-text>
+
+      <a-cylinder class="clickable" position="0 0.73 0.22" radius="0.06" height="0.04" material="shader: flat; color: #00e5ff" teletransporte="x: 0; y: 1.65; z: 1.8; modo: pista"></a-cylinder>
+      <a-text value="Volver a Pista" position="0 0.83 0.22" rotation="-55 180 0" align="center" width="1.5" color="#00e5ff"></a-text>
+    </a-entity>
+
+    <!-- BOTÓN SUBIR A CABINA (desplazado a la derecha para despejar el encuadre central de entrada) -->
+    <a-entity id="grupo-btn-spawn" position="2.3 1.25 -1.4" rotation="0 -35 0">
+      <a-sphere class="clickable" radius="0.22" material="shader: flat; color: #ffee00" teletransporte="x: 0.85; y: 2.05; z: -7.9; modo: dj"></a-sphere>
+      <a-text value="Subir a Cabina DJ" position="0 0.38 0" align="center" width="3.5" color="#ffffff"></a-text>
+    </a-entity>
+
+    <!-- ILUMINACIÓN: RELLENO HEMISFÉRICO + LUZ PRINCIPAL CON SOMBRAS -->
+    <a-entity light="type: hemisphere; color: #9c88ff; groundColor: #2c2440; intensity: 0.75"></a-entity>
+    <a-entity light="type: directional; color: #fff8ee; intensity: 1.35; castShadow: true; shadowMapWidth: 2048; shadowMapHeight: 2048; shadowCameraLeft: -10; shadowCameraRight: 10; shadowCameraTop: 10; shadowCameraBottom: -10; shadowCameraNear: 1; shadowCameraFar: 25; shadowBias: -0.0005"
+              position="3 8.5 1.5"></a-entity>
+
+    <!-- CÁMARA CON COLISIONES SÓLIDAS Y ENCUADRE DESPEJADO -->
+    <a-entity id="punto-de-vista" position="0 1.65 1.8" movimiento-solido="velocidad: 4.2">
+      <a-entity id="camara-interna" camera="fov: 65" look-controls="magicWindowTrackingEnabled: true"></a-entity>
+    </a-entity>
+
+  </a-scene>
+
+  <script>
+    // Joystick táctil en pantalla
+    (function () {
+      var zona = document.getElementById('zona-joystick');
+      var palanca = document.getElementById('palanca-joystick');
+      var maxRadio = 35;
+      var activo = false;
+      var centroX = 0, centroY = 0;
+
+      zona.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        activo = true;
+        var rect = zona.getBoundingClientRect();
+        centroX = rect.left + rect.width / 2;
+        centroY = rect.top + rect.height / 2;
+        moverPalanca(e.touches[0]);
+      }, { passive: false });
+
+      zona.addEventListener('touchmove', function (e) {
+        if (!activo) return;
+        e.preventDefault();
+        moverPalanca(e.touches[0]);
+      }, { passive: false });
+
+      function soltar() {
+        activo = false;
+        joyInput.x = 0;
+        joyInput.y = 0;
+        palanca.style.transform = 'translate(0px, 0px)';
+      }
+
+      zona.addEventListener('touchend', soltar);
+      zona.addEventListener('touchcancel', soltar);
+
+      function moverPalanca(touch) {
+        var dx = touch.clientX - centroX;
+        var dy = touch.clientY - centroY;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > maxRadio) {
+          dx = (dx / dist) * maxRadio;
+          dy = (dy / dist) * maxRadio;
+        }
+        palanca.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+        joyInput.x = dx / maxRadio;
+        joyInput.y = dy / maxRadio;
+      }
+    })();
+
+    // Desbloqueo de audio y video
+    window.addEventListener('click', function () {
+      var v1 = document.querySelector('#video-1');
+      if (v1) { v1.muted = true; v1.play().catch(function(){}); }
+      var a1 = document.querySelector('#audio-1');
+      if (a1 && a1.paused) { a1.volume = 1.0; a1.play().catch(function(){}); }
+    }, { once: true });
+  </script>
+
+</body>
+</html>
